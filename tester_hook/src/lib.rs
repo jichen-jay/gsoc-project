@@ -2,13 +2,12 @@
 
 use dotenv::dotenv;
 use flowsnet_platform_sdk::logger;
-use gosim_project::db_join::*;
-use gosim_project::db_manipulate::*;
-use gosim_project::db_populate::*;
-use gosim_project::issue_paced_tracker::*;
-use gosim_project::llm_utils::chat_inner_async;
-use gosim_project::the_paced_runner::*;
-use gosim_project::vector_search::*;
+use gsoc_project::db_join::*;
+use gsoc_project::db_manipulate::*;
+use gsoc_project::db_populate::*;
+use gsoc_project::issue_paced_tracker::*;
+use gsoc_project::llm_utils::chat_inner_async;
+use gsoc_project::the_paced_runner::*;
 use mysql_async::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -43,15 +42,6 @@ async fn handler(
     //     .unwrap();
     router
         .insert("/comment", vec![post(get_comments_by_post_handler)])
-        .unwrap();
-    router
-        .insert("/vector", vec![post(check_vdb_by_post_handler)])
-        .unwrap();
-    router
-        .insert("/vector/create", vec![post(create_vdb_handler)])
-        .unwrap();
-    router
-        .insert("/vector/delete", vec![post(delete_vdb_handler)])
         .unwrap();
 
     if let Err(e) = route(router).await {
@@ -110,66 +100,6 @@ async fn get_comments_by_post_handler(
         }
     }
 }
-async fn check_vdb_by_post_handler(
-    _headers: Vec<(String, String)>,
-    _qry: HashMap<String, Value>,
-    _body: Vec<u8>,
-) {
-    #[derive(Serialize, Deserialize, Clone, Debug, Default)]
-    pub struct VectorLoad {
-        pub issue_id: Option<String>,
-        pub collection_name: Option<String>,
-        pub text: Option<String>,
-    }
-
-    let load: VectorLoad = match serde_json::from_slice(&_body) {
-        Ok(obj) => obj,
-        Err(_e) => {
-            log::error!("failed to parse body: {}", _e);
-            return;
-        }
-    };
-    if let Some(text) = load.text {
-        match search_collection(&text, "gosim_search").await {
-            Ok(search_result) => {
-                send_response(
-                    200,
-                    vec![
-                        (
-                            String::from("content-type"),
-                            String::from("application/json"),
-                        ),
-                        (
-                            String::from("Access-Control-Allow-Origin"),
-                            String::from("*"),
-                        ),
-                    ],
-                    json!(search_result).to_string().as_bytes().to_vec(),
-                );
-            }
-            Err(e) => {
-                log::error!("Error: {:?}", e);
-            }
-        }
-    }
-    if let Some(collection_name) = load.collection_name {
-        let result = check_vector_db(&collection_name).await;
-        send_response(
-            200,
-            vec![
-                (
-                    String::from("content-type"),
-                    String::from("application/json"),
-                ),
-                (
-                    String::from("Access-Control-Allow-Origin"),
-                    String::from("*"),
-                ),
-            ],
-            json!(result).to_string().as_bytes().to_vec(),
-        );
-    }
-}
 async fn _check_deep_handler(
     _headers: Vec<(String, String)>,
     _qry: HashMap<String, Value>,
@@ -203,88 +133,6 @@ async fn _check_deep_handler(
     }
 }
 
-async fn delete_vdb_handler(
-    _headers: Vec<(String, String)>,
-    _qry: HashMap<String, Value>,
-    _body: Vec<u8>,
-) {
-    #[derive(Serialize, Deserialize, Clone, Debug, Default)]
-    pub struct VectorLoad {
-        pub collection_name: Option<String>,
-    }
-
-    let load: VectorLoad = match serde_json::from_slice(&_body) {
-        Ok(obj) => obj,
-        Err(_e) => {
-            log::error!("failed to parse body: {}", _e);
-            return;
-        }
-    };
-    if let Some(collection_name) = load.collection_name {
-        if let Err(e) = delete_collection(&collection_name).await {
-            log::error!("Error deleting vector db: {:?}", e);
-        }
-
-        let result = check_vector_db(&collection_name).await;
-        let out = json!(result).to_string();
-
-        send_response(
-            200,
-            vec![
-                (
-                    String::from("content-type"),
-                    String::from("application/json"),
-                ),
-                (
-                    String::from("Access-Control-Allow-Origin"),
-                    String::from("*"),
-                ),
-            ],
-            out.as_bytes().to_vec(),
-        );
-    }
-}
-async fn create_vdb_handler(
-    _headers: Vec<(String, String)>,
-    _qry: HashMap<String, Value>,
-    _body: Vec<u8>,
-) {
-    #[derive(Serialize, Deserialize, Clone, Debug, Default)]
-    pub struct VectorLoad {
-        pub collection_name: Option<String>,
-    }
-
-    let load: VectorLoad = match serde_json::from_slice(&_body) {
-        Ok(obj) => obj,
-        Err(_e) => {
-            log::error!("failed to parse body: {}", _e);
-            return;
-        }
-    };
-    if let Some(collection_name) = load.collection_name {
-        if let Err(e) = create_my_collection(1536, &collection_name).await {
-            log::error!("Error creating vector db: {:?}", e);
-        }
-
-        let result = check_vector_db(&collection_name).await;
-        let out = json!(result).to_string();
-
-        send_response(
-            200,
-            vec![
-                (
-                    String::from("content-type"),
-                    String::from("application/json"),
-                ),
-                (
-                    String::from("Access-Control-Allow-Origin"),
-                    String::from("*"),
-                ),
-            ],
-            out.as_bytes().to_vec(),
-        );
-    }
-}
 async fn trigger(_headers: Vec<(String, String)>, _qry: HashMap<String, Value>, _body: Vec<u8>) {
     #[derive(Serialize, Deserialize, Clone, Debug, Default)]
     pub struct FuncLoad {
@@ -310,7 +158,6 @@ async fn trigger(_headers: Vec<(String, String)>, _qry: HashMap<String, Value>, 
             "5" => popuate_dbs_save_issues_closed(&pool).await,
             "6" => closed_master(&pool).await,
             "7" => project_master_back_sync(&pool).await,
-            "8" => populate_vector_db(&pool).await,
             "9" => sum_budget_to_project(&pool).await,
             "10" => popuate_dbs_add_issues_updated(&pool).await,
             "11" => popuate_dbs_save_issues_assign_comment(&pool).await,
@@ -328,7 +175,6 @@ pub async fn run_hourly(pool: &Pool) -> anyhow::Result<()> {
     // let _ = popuate_dbs(pool).await?;
     // let _ = join_ops(pool).await?;
     // let _ = cleanup_ops(pool).await?;
-    let _ = populate_vector_db(pool).await;
     Ok(())
 }
 pub async fn popuate_dbs(pool: &Pool) -> anyhow::Result<()> {
@@ -376,16 +222,6 @@ pub async fn popuate_dbs(pool: &Pool) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn populate_vector_db(pool: &Pool) -> anyhow::Result<()> {
-    for item in get_issues_repos_from_db().await.expect("msg") {
-        log::info!("uploading to vector_db: {:?}", item.0);
-        let _ = upload_to_collection(&item.0, item.1.clone()).await;
-        let _ = mark_id_indexed(&pool, &item.0).await;
-    }
-    let _ = check_vector_db("gosim_search").await;
-
-    Ok(())
-}
 
 pub async fn join_ops(pool: &Pool) -> anyhow::Result<()> {
     let _ = open_master(&pool).await?;

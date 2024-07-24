@@ -2,10 +2,10 @@
 //are scheduled to run in a more granular fashsion, so that one task won't jam the other
 //so that each function can handle an anticipated amount of work quickly, keeping the total run time far below one hour 
 use crate::{
-    db_join::*, db_manipulate::*, db_populate::*, issue_bot::comment_on_issue,
-    issue_paced_tracker::*, vector_search::*,
+    db_join::*, db_manipulate::*, db_populate::*,
 };
 use crate::{ISSUE_LABEL, PREV_HOUR, PR_LABEL, START_DATE, THIS_HOUR};
+ use crate::issue_paced_tracker::*;
 
 use anyhow::Ok;
 use mysql_async::Pool;
@@ -61,9 +61,6 @@ pub async fn run_hourly(pool: &Pool) -> anyhow::Result<()> {
     //replicate issue entries in issues_closed table to issues_master table
     let _ = closed_master(pool).await?;
 
-    //now that we have detailed info like project descriptions, issue body text, etc. we upload them to vector db for future querying
-    let _ = populate_vector_db(pool).await?;
-
     //issues may have updated budget info in the past hour, we run through the issues_master table and update the data in projects table
     let _ = sum_budget_to_project(&pool).await?;
 
@@ -84,9 +81,6 @@ pub async fn run_hourly(pool: &Pool) -> anyhow::Result<()> {
 
     //approaching the end of the hourly project run, we empty temporary tables issues_open, issues_updated, and issues_closed
     let _ = delete_issues_open_update_closed(&pool).await?;
-
-    //run through the issues_master table, identify those needing follow-up messages, post messages to those issues
-    let _ = note_issues(pool).await?;
 
     Ok(())
 }
@@ -254,85 +248,3 @@ pub async fn popuate_dbs_fill_projects(pool: &Pool) -> anyhow::Result<()> {
     Ok(())
 }
 
-
-//issues and projects have been summarized previously and saved in the issues_repos_summarized table
-//now we use these clean texts to populate the vector db 
-pub async fn populate_vector_db(pool: &Pool) -> anyhow::Result<()> {
-    for item in get_issues_repos_from_db().await.expect("msg") {
-        log::info!("uploading to vector_db: {:?}", item.0);
-        let _ = upload_to_collection(&item.0, item.1.clone()).await;
-        let _ = mark_id_indexed(&pool, &item.0).await;
-    }
-    let _ = check_vector_db("gosim_search").await;
-
-    Ok(())
-}
-
-
-pub async fn note_issues(pool: &Pool) -> anyhow::Result<()> {
-    let _ = note_budget_allocated(pool).await?;
-    let _ = note_issue_declined(pool).await?;
-    let _ = note_distribute_fund(pool).await?;
-    let _ = note_one_months_no_pr(pool).await?;
-    Ok(())
-}
-
-
-//run through the issues_master table, locate issues that have seen budget allocation the past hour
-//post comments on these issues to notify project participants
-pub async fn note_budget_allocated(pool: &Pool) -> anyhow::Result<()> {
-    let issue_ids = get_issue_ids_with_budget(pool).await?;
-    log::info!(
-        "Issue ids with budget allocated, count: {:?}",
-        issue_ids.len()
-    );
-    for (issue_id, issue_budget) in issue_ids {
-        let comment = format!("Congratulations! GOSIM grant approved. Your proposal is approved to get ${} fund to fix the issue.", issue_budget);
-
-        let _ = comment_on_issue(&issue_id, &comment).await?;
-    }
-    Ok(())
-}
-
-//run through the issues_master table, locate issues that have been declined in the past hour
-//post comments on these issues to notify project participants
-pub async fn note_issue_declined(pool: &Pool) -> anyhow::Result<()> {
-    let issue_ids = get_issue_ids_declined(pool).await?;
-    log::info!(
-        "Issue ids with budget declined, count: {:?}",
-        issue_ids.len()
-    );
-    for issue_id in issue_ids {
-        let comment = format!("I’m sorry your proposal wasn't approved");
-
-        let _ = comment_on_issue(&issue_id, &comment).await?;
-    }
-    Ok(())
-}
-
-//run through the issues_master table, locate issues that have been flagged issue_budget_approved in the past hour
-//post comments on these issues to notify project participants
-pub async fn note_distribute_fund(pool: &Pool) -> anyhow::Result<()> {
-    let issue_ids: Vec<(Option<String>, String, i32)> = get_issue_ids_distribute_fund(pool).await?;
-    log::info!("Issue_ids to split fund, count: {:?}", issue_ids.len());
-    for (issue_assignee, _issue_id, issue_budget) in issue_ids {
-        let comment = format!("@{:?}, Well done!  According to the PR commit history. @{:?} should receive ${}. Please fill in this form to claim your fund. ", issue_assignee, issue_assignee, issue_budget);
-
-        let _ = comment_on_issue(&_issue_id, &comment).await?;
-    }
-    Ok(())
-}
-
-//run through the issues_master table, locate issues that have been allocated budget but saw no activity in the past month
-//post comments on these issues to notify project participants
-pub async fn note_one_months_no_pr(pool: &Pool) -> anyhow::Result<()> {
-    let issue_ids = get_issue_ids_one_month_no_activity(pool).await?;
-    log::info!("Issue_ids no activity, count: {:?}", issue_ids.len());
-
-    for issue_id in issue_ids {
-        let comment = format!("please link your PR to the issue it fixed in three days. Or this issue will be deemed not completed, then we can’t provide the fund.");
-
-        let _ = comment_on_issue(&issue_id, &comment).await?;
-    }
-    Ok(())
-}
